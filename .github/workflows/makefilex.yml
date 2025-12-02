@@ -19,6 +19,7 @@ jobs:
     - name: Build controller image
       run: |
         make workflow-controller-image
+        docker images
         # 或你实际使用的命令，确保生成镜像
         # 假设生成的镜像是 argo-workflow-controller:latest
 
