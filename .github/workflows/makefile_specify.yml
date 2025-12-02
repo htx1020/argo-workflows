@@ -1,0 +1,95 @@
+name: Smart Argo Image Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_spec:
+        description: '标签规范 (如: v3.6.5, v3.6.5-$(date), auto)'
+        required: true
+        default: 'auto'
+      include_executor:
+        description: '是否包含 argoexec'
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: quay.io/argoproj
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: argoproj/argo-workflows
+
+    - name: Determine tag
+      id: tag
+      run: |
+        TAG_SPEC="${{ github.event.inputs.tag_spec }}"
+        
+        if [[ "$TAG_SPEC" == "auto" ]]; then
+          # 从git标签或分支名自动生成
+          if git describe --tags --exact-match 2>/dev/null; then
+            TAG=$(git describe --tags --exact-match)
+          elif [[ -f "VERSION" ]]; then
+            TAG=$(cat VERSION)
+          else
+            TAG="build-$(git rev-parse --short HEAD)"
+          fi
+        elif [[ "$TAG_SPEC" == *"\$(date)"* ]]; then
+          # 替换日期变量
+          DATE=$(date +%Y%m%d)
+          TAG=$(echo "$TAG_SPEC" | sed "s/\\\$(date)/$DATE/")
+        else
+          TAG="$TAG_SPEC"
+        fi
+        
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "Using tag: $TAG"
+
+    - name: Build images
+      run: |
+        TAG="${{ steps.tag.outputs.tag }}"
+        
+        echo "Building with tag: $TAG"
+        
+        # 构建核心镜像
+        make workflow-controller-image IMAGE_TAG=$TAG
+        make argocli-image IMAGE_TAG=$TAG
+        
+        # 可选构建 argoexec
+        if ${{ github.event.inputs.include_executor }}; then
+          make argoexec-image IMAGE_TAG=$TAG
+        fi
+
+    - name: Package and export
+      run: |
+        TAG="${{ steps.tag.outputs.tag }}"
+        
+        # 收集所有构建的镜像
+        IMAGES=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep ":$TAG$" | tr '\n' ' ')
+        
+        echo "Packaging images: $IMAGES"
+        docker save -o "argo-$TAG.tar" $IMAGES
+        
+        # 创建加载脚本
+        cat > load-images.sh << 'EOF'
+        #!/bin/bash
+        echo "Loading Argo Workflows images..."
+        docker load -i argo-$TAG.tar
+        echo "Available images:"
+        docker images | grep "$TAG"
+        EOF
+        
+        chmod +x load-images.sh
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: argo-images-${{ steps.tag.outputs.tag }}
+        path: |
+          argo-*.tar
+          load-images.sh
+        retention-days: 90
