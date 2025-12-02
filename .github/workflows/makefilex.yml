@@ -8,12 +8,26 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: build dependencies
-      run: make workflow-controller-image
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build controller image
+      run: |
+        make image-controller  # 或你实际使用的命令，确保生成镜像
+        # 假设生成的镜像是 argo-workflow-controller:latest
+
+    - name: Save Docker image to tar
+      run: docker save -o workflow-controller.tar argo-workflow-controller:latest
+
+    - name: Upload Docker image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: workflow-controller-image
+        path: workflow-controller.tar
+        retention-days: 3
 
