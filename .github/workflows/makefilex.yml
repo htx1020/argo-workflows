@@ -20,16 +20,20 @@ jobs:
       run: |
         make workflow-controller-image
         docker images
-        # 或你实际使用的命令，确保生成镜像
-        # 假设生成的镜像是 argo-workflow-controller:latest
+        make argocli-image
+        docker images
 
     - name: Save Docker image to tar
-      run: docker save -o workflow-controller.tar quay.io/argoproj/workflow-controller:latest
+      run: |
+        # 方法2：从文件读取镜像列表
+        echo "quay.io/argoproj/workflow-controller:latest" > image-list.txt
+        echo "quay.io/argoproj/argocli:latest" >> image-list.txt
+        docker save -o workflow-deploy.tar $(cat image-list.txt)
 
     - name: Upload Docker image artifact
       uses: actions/upload-artifact@v4
       with:
-        name: workflow-controller-image
-        path: workflow-controller.tar
+        name: workflow-deploy-image
+        path: workflow-deploy.tar
         retention-days: 3
 
