@@ -1,60 +1,115 @@
-name: Build on Tag (No Makefile Change)
+name: Build with Custom Tag
 
 on:
+  # 手动触发，支持输入参数
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'latest'
+        type: string
+      push_to_registry:
+        description: 'Push to Docker registry?'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+  # 保留原有的自动触发条件（可选）
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'        # 匹配 v1.2.3 等
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ github.event.inputs.tag || 'latest' }}
+      PUSH_TO_REGISTRY: ${{ github.event.inputs.push_to_registry || 'false' }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Extract tag name
-        id: get_tag
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          echo "TAG=$TAG" >> $GITHUB_ENV
-          echo "Building for tag: $TAG"
+    - name: Log build parameters
+      run: |
+        echo "Building with tag: $IMAGE_TAG"
+        echo "Push to registry: $PUSH_TO_REGISTRY"
+        echo "Event type: ${{ github.event_name }}"
+        echo "Triggered by: ${{ github.actor }}"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-      - name: Build images (as latest)
-        run: |
-          make workflow-controller-image
-          make argocli-image
-          docker images
+    - name: Login to Docker Hub (if pushing)
+      if: env.PUSH_TO_REGISTRY == 'true'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Retag images with version
-        run: |
-          # 原始镜像（由 Makefile 构建）
-          CONTROLLER_LATEST=quay.io/argoproj/workflow-controller:latest
-          ARGOCLI_LATEST=quay.io/argoproj/argocli:latest
+    - name: Build workflow-controller image
+      run: |
+        # 设置环境变量传递tag给make命令
+        export IMAGE_TAG="$IMAGE_TAG"
+        make workflow-controller-image IMAGE_TAG="$IMAGE_TAG"
+        docker images | grep workflow-controller
 
-          # 新标签
-          CONTROLLER_TAGGED=quay.io/argoproj/workflow-controller:${{ env.TAG }}
-          ARGOCLI_TAGGED=quay.io/argoproj/argocli:${{ env.TAG }}
+    - name: Build argocli image
+      run: |
+        export IMAGE_TAG="$IMAGE_TAG"
+        make argocli-image IMAGE_TAG="$IMAGE_TAG"
+        docker images | grep argocli
 
-          # 打新标签
-          docker tag $CONTROLLER_LATEST $CONTROLLER_TAGGED
-          docker tag $ARGOCLI_LATEST $ARGOCLI_TAGGED
+    - name: Tag images with custom tag
+      run: |
+        # 重新标记镜像
+        docker tag quay.io/argoproj/workflow-controller:latest quay.io/argoproj/workflow-controller:$IMAGE_TAG
+        docker tag quay.io/argoproj/argocli:latest quay.io/argoproj/argocli:$IMAGE_TAG
+        
+        # 显示所有相关镜像
+        docker images | grep -E "(workflow-controller|argocli)"
 
-          # 验证
-          docker images | grep argoproj
+    - name: Save Docker image to tar
+      run: |
+        echo "quay.io/argoproj/workflow-controller:$IMAGE_TAG" > image-list.txt
+        echo "quay.io/argoproj/argocli:$IMAGE_TAG" >> image-list.txt
+        echo "Saving images with tag: $IMAGE_TAG"
+        cat image-list.txt
+        docker save -o workflow-deploy-$IMAGE_TAG.tar $(cat image-list.txt)
+        ls -lh workflow-deploy-*.tar
 
-      - name: Save versioned images to tar
-        run: |
-          echo "quay.io/argoproj/workflow-controller:${{ env.TAG }}" > image-list.txt
-          echo "quay.io/argoproj/argocli:${{ env.TAG }}" >> image-list.txt
-          docker save -o workflow-deploy.tar $(cat image-list.txt)
+    - name: Upload Docker image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: workflow-deploy-${{ env.IMAGE_TAG }}
+        path: workflow-deploy-${{ env.IMAGE_TAG }}.tar
+        retention-days: 7
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: workflow-deploy-image-${{ env.TAG }}
-          path: workflow-deploy.tar
-          retention-days: 7
+    - name: Push images to registry (optional)
+      if: env.PUSH_TO_REGISTRY == 'true'
+      run: |
+        echo "Pushing images to registry with tag: $IMAGE_TAG"
+        docker push quay.io/argoproj/workflow-controller:$IMAGE_TAG
+        docker push quay.io/argoproj/argocli:$IMAGE_TAG
+
+    - name: Generate summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Build completed successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Image Tag:** $IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Built Images:**" >> $GITHUB_STEP_SUMMARY
+        echo "- quay.io/argoproj/workflow-controller:$IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+        echo "- quay.io/argoproj/argocli:$IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Artifact:** workflow-deploy-$IMAGE_TAG.tar" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$PUSH_TO_REGISTRY" = "true" ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** Images pushed to quay.io" >> $GITHUB_STEP_SUMMARY
+        fi
